@@ -38,6 +38,7 @@ The repository contains several visualization modes (FFT bars, waveforms, LCD/py
   - `fft_hybrid_Waveform.py`, `fft_waveform_visualizer.py`, `waveform_visualizer.py`, `visualizer.py` – alternate matrix modes.
   - `lcd_visualizer.py` and variants – FFT display rendered via pygame on an HDMI-connected LCD.
   - `image_scroller.py` – scrolls PNG posters across the 64×64 array for font/art previews.
+  - `video_player.py` – streams MP4/MOV/etc. via ffmpeg onto the matrix with fit/fill/stretch scaling options.
 
 - **Third-party library**: `rpi-rgb-led-matrix/` – compiled `rgbmatrix` Python bindings for driving the HUB75 panels.
 
@@ -211,9 +212,22 @@ python3 visualizers/waveform_visualizer.py            # smooth waveform line
 python3 visualizers/visualizer.py                     # log-spaced FFT bars
 python3 visualizers/lcd_visualizer.py                 # pygame LCD mirror
 python3 visualizers/image_scroller.py                # scroll PNGs from images/
+python3 visualizers/video_player.py                  # play videos from ~/videos
 ```
 
 `image_scroller.py` looks for image files in `~/images` by default (PNG/JPG/BMP/GIF; override with `--pattern` pointing at a directory or glob), automatically scales them to the active matrix size, scrolls each in from the right, pauses for 5 seconds, and scrolls off to the left; it loops until stopped. Adjust panel geometry with `--rows`, `--cols`, `--chain`, and `--parallel` (defaults target a single 64×32 panel; set `--parallel 2` for two panels stacked to 64×64). Use `--scale 1.25` (for example) to zoom the artwork beyond the panel bounds while keeping it centered.
+
+`video_player.py` plays videos located in `~/videos` (override with `--pattern`). It shells out to `ffmpeg`, so install it via `sudo apt install ffmpeg` if needed. Scaling modes:
+
+- `--mode fit` (default) letterboxes the frame to fit entirely.
+- `--mode fill` crops to fill the matrix without borders.
+- `--mode stretch` resizes without preserving aspect ratio.
+
+Override geometry with the same panel flags used by the other scripts, position the rendered frame on a larger canvas with `--offset-x`/`--offset-y`, and zoom the source content with `--zoom` (e.g., `--zoom 1.5` enlarges by 50%). Videos loop indefinitely by default; add `--no-loop` to play once. Example:
+
+```bash
+python3 visualizers/video_player.py --pattern '~/videos' --mode fill --parallel 2 --offset-y 16 --zoom 1.25
+```
 
 Most scripts look up the input device named `null_monitor`; if you change the sink name in PulseAudio, update `config["SOURCE_NAME"]` (or `SOURCE_NAME` constants) accordingly.
 
