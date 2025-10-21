@@ -37,6 +37,7 @@ The repository contains several visualization modes (FFT bars, waveforms, LCD/py
   - `fft_hybrid_Waveform-v2.py` – primary 64×32 matrix FFT visualizer with falloff caps.
   - `fft_hybrid_Waveform.py`, `fft_waveform_visualizer.py`, `waveform_visualizer.py`, `visualizer.py` – alternate matrix modes.
   - `lcd_visualizer.py` and variants – FFT display rendered via pygame on an HDMI-connected LCD.
+  - `image_scroller.py` – scrolls PNG posters across the 64×64 array for font/art previews.
 
 - **Third-party library**: `rpi-rgb-led-matrix/` – compiled `rgbmatrix` Python bindings for driving the HUB75 panels.
 
@@ -209,7 +210,10 @@ python3 visualizers/fft_hybrid_Waveform-v2.py         # default FFT matrix visua
 python3 visualizers/waveform_visualizer.py            # smooth waveform line
 python3 visualizers/visualizer.py                     # log-spaced FFT bars
 python3 visualizers/lcd_visualizer.py                 # pygame LCD mirror
+python3 visualizers/image_scroller.py                # scroll PNGs from images/
 ```
+
+`image_scroller.py` looks for image files in `~/images` by default (PNG/JPG/BMP/GIF; override with `--pattern` pointing at a directory or glob), automatically scales them to the active matrix size, scrolls each in from the right, pauses for 5 seconds, and scrolls off to the left; it loops until stopped. Adjust panel geometry with `--rows`, `--cols`, `--chain`, and `--parallel` (defaults target a single 64×32 panel; set `--parallel 2` for two panels stacked to 64×64). Use `--scale 1.25` (for example) to zoom the artwork beyond the panel bounds while keeping it centered.
 
 Most scripts look up the input device named `null_monitor`; if you change the sink name in PulseAudio, update `config["SOURCE_NAME"]` (or `SOURCE_NAME` constants) accordingly.
 
