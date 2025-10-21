@@ -1,0 +1,12 @@
+[Unit]
+Description=Auto-start FFT Hybrid Waveform Visualizer when Spotify audio plays
+After=network.target sound.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/run-visualizer.sh
+Restart=always
+User=admin
+
+[Install]
+WantedBy=multi-user.target

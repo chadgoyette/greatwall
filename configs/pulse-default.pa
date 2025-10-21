@@ -1,0 +1,4 @@
+### PulseAudio extras for greatwall project
+load-module module-null-sink sink_name=nullsink
+load-module module-combine-sink sink_name=combined slaves=nullsink,alsa_output.platform-fe00b840.mailbox.stereo-fallback
+set-default-sink combined

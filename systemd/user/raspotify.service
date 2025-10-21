@@ -1,0 +1,15 @@
+[Unit]
+Description=Raspotify (Spotify Connect Client)
+Documentation=https://github.com/dtcooper/raspotify
+Requires=pulseaudio.service
+After=pulseaudio.service
+
+[Service]
+ExecStart=/usr/bin/librespot $OPTIONS
+EnvironmentFile=-/etc/default/raspotify
+Restart=always
+RestartSec=10
+Environment=HOME=/home/admin
+
+[Install]
+WantedBy=default.target

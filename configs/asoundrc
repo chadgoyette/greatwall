@@ -1,0 +1,9 @@
+pcm.null_monitor {
+    type pulse
+    device nullsink.monitor
+}
+
+ctl.null_monitor {
+    type pulse
+    device nullsink.monitor
+}
