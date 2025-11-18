@@ -22,8 +22,13 @@ SCROLL_SPEED_PX = 1          # pixels per frame
 FRAME_DELAY_SEC = 0.01       # time between frames in seconds
 HOLD_TIME_SEC = 5.0          # dwell time while centered
 DISPLAY_WIDTH = 64
-DISPLAY_HEIGHT = 32
+DISPLAY_HEIGHT = 64
 SUPPORTED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".gif")
+CHAIN_LAYOUT = "vertical"     # how chained panels are arranged virtually
+PANEL_ROWS = 32
+PANEL_COLS = 64
+CHAIN_COUNT = 2
+PARALLEL_COUNT = 1
 
 
 def build_matrix(brightness: int, rows: int, cols: int, chain: int, parallel: int) -> RGBMatrix:
@@ -85,6 +90,31 @@ def resize_to_canvas(img: Image.Image, width: int, height: int, scale: float) ->
     return canvas
 
 
+def render_virtual_image(canvas, image: Image.Image, x_offset: int):
+    if CHAIN_LAYOUT == "horizontal":
+        canvas.SetImage(image, x_offset, 0)
+        return
+
+    if PARALLEL_COUNT != 1:
+        raise ValueError("Vertical chain layout currently requires --parallel 1.")
+
+    hardware_width = PANEL_COLS * CHAIN_COUNT
+    hardware_height = PANEL_ROWS * PARALLEL_COUNT
+    frame = Image.new("RGB", (hardware_width, hardware_height))
+
+    for idx in reversed(range(CHAIN_COUNT)):
+        y0 = idx * PANEL_ROWS
+        y1 = min(y0 + PANEL_ROWS, image.height)
+        if y0 >= image.height or y0 >= y1:
+            continue
+        panel_slice = image.crop((0, y0, image.width, y1))
+        panel_canvas = Image.new("RGB", (PANEL_COLS, PANEL_ROWS))
+        panel_canvas.paste(panel_slice, (x_offset, 0))
+        frame.paste(panel_canvas, (idx * PANEL_COLS, 0))
+
+    canvas.SetImage(frame, 0, 0)
+
+
 def scroll_image(matrix: RGBMatrix, image: Image.Image):
     canvas = matrix.CreateFrameCanvas()
     start_x = DISPLAY_WIDTH
@@ -94,7 +124,7 @@ def scroll_image(matrix: RGBMatrix, image: Image.Image):
     # scroll in
     for x in range(start_x, center_x - 1, -SCROLL_SPEED_PX):
         canvas.Clear()
-        canvas.SetImage(image, x, 0)
+        render_virtual_image(canvas, image, x)
         canvas = matrix.SwapOnVSync(canvas)
         time.sleep(FRAME_DELAY_SEC)
 
@@ -102,20 +132,21 @@ def scroll_image(matrix: RGBMatrix, image: Image.Image):
     hold_until = time.time() + HOLD_TIME_SEC
     while time.time() < hold_until:
         canvas.Clear()
-        canvas.SetImage(image, center_x, 0)
+        render_virtual_image(canvas, image, center_x)
         canvas = matrix.SwapOnVSync(canvas)
         time.sleep(FRAME_DELAY_SEC)
 
     # scroll out
     for x in range(center_x, end_x - 1, -SCROLL_SPEED_PX):
         canvas.Clear()
-        canvas.SetImage(image, x, 0)
+        render_virtual_image(canvas, image, x)
         canvas = matrix.SwapOnVSync(canvas)
         time.sleep(FRAME_DELAY_SEC)
 
 
 def main():
     global SCROLL_SPEED_PX, HOLD_TIME_SEC, FRAME_DELAY_SEC, DISPLAY_WIDTH, DISPLAY_HEIGHT
+    global CHAIN_LAYOUT, PANEL_ROWS, PANEL_COLS, CHAIN_COUNT, PARALLEL_COUNT
 
     parser = argparse.ArgumentParser(description="Scroll PNG images across a 64x64 LED matrix.")
     parser.add_argument("--pattern", default=DEFAULT_IMAGE_GLOB,
@@ -126,16 +157,30 @@ def main():
     parser.add_argument("--delay", type=float, default=FRAME_DELAY_SEC, help="Delay between frames in seconds")
     parser.add_argument("--rows", type=int, default=32, help="Rows per panel")
     parser.add_argument("--cols", type=int, default=64, help="Columns per panel")
-    parser.add_argument("--chain", type=int, default=1, help="Number of chained panels (width)")
+    parser.add_argument("--chain", type=int, default=2, help="Number of chained panels (width)")
     parser.add_argument("--parallel", type=int, default=1, help="Number of parallel panels (height)")
+    parser.add_argument("--chain-layout", choices=("horizontal", "vertical"), default="vertical",
+                        help="Interpret chained panels horizontally (default from library) or as a vertical stack.")
     parser.add_argument("--scale", type=float, default=1.0, help="Image scale factor (1.0 fits, >1 zooms in)")
     args = parser.parse_args()
 
     SCROLL_SPEED_PX = max(1, args.speed)
     HOLD_TIME_SEC = max(0, args.hold)
     FRAME_DELAY_SEC = max(0.001, args.delay)
-    DISPLAY_WIDTH = args.cols * args.chain
-    DISPLAY_HEIGHT = args.rows * args.parallel
+    CHAIN_LAYOUT = args.chain_layout
+    PANEL_ROWS = args.rows
+    PANEL_COLS = args.cols
+    CHAIN_COUNT = max(1, args.chain)
+    PARALLEL_COUNT = max(1, args.parallel)
+
+    if CHAIN_LAYOUT == "vertical":
+        if PARALLEL_COUNT != 1:
+            parser.error("Vertical chain layout currently supports --parallel 1. Adjust wiring or run with --chain-layout horizontal.")
+        DISPLAY_WIDTH = PANEL_COLS
+        DISPLAY_HEIGHT = PANEL_ROWS * CHAIN_COUNT
+    else:
+        DISPLAY_WIDTH = PANEL_COLS * CHAIN_COUNT
+        DISPLAY_HEIGHT = PANEL_ROWS * PARALLEL_COUNT
 
     images = load_images(args.pattern, args.scale)
     print(f"Loaded {len(images)} image(s): {[name for name, _ in images]}")

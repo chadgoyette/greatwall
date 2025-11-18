@@ -22,6 +22,7 @@ from rgbmatrix import RGBMatrix, RGBMatrixOptions
 
 DEFAULT_VIDEO_PATTERN = os.path.expanduser("~/videos/*")
 SUPPORTED_VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".avi", ".webm")
+DEFAULT_CHAIN_LAYOUT = "vertical"
 
 
 def ensure_ffmpeg_available():
@@ -140,26 +141,68 @@ def build_ffmpeg_command(video_path: str, width: int, height: int, mode: str, zo
     ]
 
 
+def render_frame_to_canvas(
+    canvas,
+    frame: Image.Image,
+    offset_x: int,
+    offset_y: int,
+    layout: str,
+    panel_cols: int,
+    panel_rows: int,
+    chain_count: int,
+    parallel_count: int,
+) -> None:
+    if layout == "horizontal":
+        canvas.SetImage(frame, offset_x, offset_y)
+        return
+
+    if parallel_count != 1:
+        raise RuntimeError("Vertical chain layout currently requires --parallel 1.")
+    if offset_y != 0:
+        raise RuntimeError("Vertical chain layout currently requires --offset-y 0.")
+
+    hardware_width = panel_cols * chain_count
+    hardware_height = panel_rows * parallel_count
+    composed = Image.new("RGB", (hardware_width, hardware_height))
+
+    for idx in reversed(range(chain_count)):
+        y0 = idx * panel_rows
+        y1 = min(y0 + panel_rows, frame.height)
+        if y0 >= frame.height or y0 >= y1:
+            continue
+        slice_img = frame.crop((0, y0, frame.width, y1))
+        panel_canvas = Image.new("RGB", (panel_cols, panel_rows))
+        panel_canvas.paste(slice_img, (offset_x, 0))
+        composed.paste(panel_canvas, (idx * panel_cols, 0))
+
+    canvas.SetImage(composed, 0, 0)
+
+
 def stream_video(
     matrix: RGBMatrix,
     video_path: str,
-    width: int,
-    height: int,
+    virtual_width: int,
+    virtual_height: int,
     mode: str,
     fps_override: Optional[float],
     min_frame_delay: float,
     offset_x: int,
     offset_y: int,
     zoom: float,
+    layout: str,
+    panel_cols: int,
+    panel_rows: int,
+    chain_count: int,
+    parallel_count: int,
 ) -> None:
-    cmd = build_ffmpeg_command(video_path, width, height, mode, zoom)
+    cmd = build_ffmpeg_command(video_path, virtual_width, virtual_height, mode, zoom)
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE)
     if process.stdout is None:
         raise RuntimeError("Failed to open ffmpeg stdout.")
 
     fps = fps_override or get_video_fps(video_path) or 30.0
     frame_duration = max(1.0 / fps, min_frame_delay)
-    frame_size = width * height * 3
+    frame_size = virtual_width * virtual_height * 3
 
     canvas = matrix.CreateFrameCanvas()
     frame_count = 0
@@ -171,9 +214,19 @@ def stream_video(
             if len(frame_bytes) < frame_size:
                 break
 
-            frame = Image.frombuffer("RGB", (width, height), frame_bytes, "raw", "RGB", 0, 1)
+            frame = Image.frombuffer("RGB", (virtual_width, virtual_height), frame_bytes, "raw", "RGB", 0, 1)
             canvas.Clear()
-            canvas.SetImage(frame, offset_x, offset_y)
+            render_frame_to_canvas(
+                canvas,
+                frame,
+                offset_x,
+                offset_y,
+                layout,
+                panel_cols,
+                panel_rows,
+                chain_count,
+                parallel_count,
+            )
             canvas = matrix.SwapOnVSync(canvas)
             frame_count += 1
 
@@ -194,8 +247,10 @@ def main():
     parser.add_argument("--brightness", type=int, default=50, help="Matrix brightness (0-100)")
     parser.add_argument("--rows", type=int, default=32, help="Rows per panel")
     parser.add_argument("--cols", type=int, default=64, help="Columns per panel")
-    parser.add_argument("--chain", type=int, default=1, help="Number of chained panels horizontally")
-    parser.add_argument("--parallel", type=int, default=1, help="Number of parallel panels vertically")
+    parser.add_argument("--chain", type=int, default=2, help="Number of chained panels")
+    parser.add_argument("--parallel", type=int, default=1, help="Number of parallel panels")
+    parser.add_argument("--chain-layout", choices=("horizontal", "vertical"), default=DEFAULT_CHAIN_LAYOUT,
+                        help="Interpret chained panels as a horizontal strip (library default) or as a vertical stack.")
     parser.add_argument("--mode", choices=("fit", "fill", "stretch"), default="fit",
                         help="Scale strategy: fit (letterbox), fill (crop), or stretch")
     parser.add_argument("--fps", type=float, default=None, help="Override video FPS")
@@ -215,9 +270,24 @@ def main():
     videos = list_videos(args.pattern)
     print(f"Found {len(videos)} video(s): {[Path(v).name for v in videos]}")
 
-    matrix = build_matrix(args.rows, args.cols, args.chain, args.parallel, args.brightness)
-    width = args.cols * args.chain
-    height = args.rows * args.parallel
+    chain_layout = args.chain_layout
+    panel_rows = args.rows
+    panel_cols = args.cols
+    chain_count = max(1, args.chain)
+    parallel_count = max(1, args.parallel)
+
+    if chain_layout == "vertical":
+        if parallel_count != 1:
+            parser.error("Vertical chain layout currently supports --parallel 1.")
+        if args.offset_y != 0:
+            parser.error("Use --offset-y 0 when --chain-layout vertical (bottom panel is remapped through chained columns).")
+        virtual_width = panel_cols
+        virtual_height = panel_rows * chain_count
+    else:
+        virtual_width = panel_cols * chain_count
+        virtual_height = panel_rows * parallel_count
+
+    matrix = build_matrix(panel_rows, panel_cols, chain_count, parallel_count, args.brightness)
 
     try:
         while True:
@@ -226,14 +296,19 @@ def main():
                 stream_video(
                     matrix,
                     video,
-                    width,
-                    height,
+                    virtual_width,
+                    virtual_height,
                     args.mode,
                     args.fps,
                     args.min_delay,
                     args.offset_x,
                     args.offset_y,
                     args.zoom,
+                    chain_layout,
+                    panel_cols,
+                    panel_rows,
+                    chain_count,
+                    parallel_count,
                 )
             if not args.loop:
                 break
