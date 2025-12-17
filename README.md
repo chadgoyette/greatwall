@@ -145,6 +145,13 @@ Environment=HOME=/home/admin
 WantedBy=default.target
 ```
 
+Install or refresh the user unit and make sure it starts automatically:
+```bash
+install -Dm644 systemd/user/raspotify.service ~/.config/systemd/user/raspotify.service
+systemctl --user daemon-reload
+systemctl --user enable --now raspotify
+```
+
 Reload and restart if you change anything:
 ```bash
 systemctl --user daemon-reload

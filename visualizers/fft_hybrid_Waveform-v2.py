@@ -15,9 +15,13 @@ config = {
     "LOW_FREQ": 50,  #the bottom and top frequencies (in Hz) of your log-spaced bins—everything between these bounds is analyzed
     "HIGH_FREQ": 6000,
 
-    # Display
-    "ROWS": 32,
-    "COLS": 64,
+    # Display geometry
+    "PANEL_ROWS": 32,    # physical rows on a single HUB75 panel
+    "PANEL_COLS": 64,    # physical columns on a single panel
+    "CHAIN_LENGTH": 2,   # number of panels daisy-chained horizontally
+    "PARALLEL_COUNT": 1, # number of panels stacked vertically via HUB75 parallel connectors
+    "CHAIN_LAYOUT": "vertical",  # "horizontal" = treat chain as wide display, "vertical" = virtual vertical stack
+    "ROTATION_DEG": 0,   # rotate output: 0, 90, 180, or 270 (90/270 require a square virtual matrix)
 
     # Timing
     "FPS": 25.0,  #Frames per second—how many times per second the visualizer updates
@@ -37,16 +41,36 @@ config = {
 }
 
 # ——— Derived constants ———
-FADE_FACTOR = math.exp(
-    math.log(config["FADE_FLOOR"]) / (config["FADE_TIME"] * config["FPS"])
-)
+PANEL_ROWS = config["PANEL_ROWS"]
+PANEL_COLS = config["PANEL_COLS"]
+CHAIN_LENGTH = max(1, config.get("CHAIN_LENGTH", 1))
+PARALLEL_COUNT = max(1, config.get("PARALLEL_COUNT", 1))
+CHAIN_LAYOUT = config.get("CHAIN_LAYOUT", "horizontal").lower()
+
+if CHAIN_LAYOUT not in ("horizontal", "vertical"):
+    raise ValueError("CHAIN_LAYOUT must be 'horizontal' or 'vertical'.")
+
+if CHAIN_LAYOUT == "horizontal":
+    VIRTUAL_ROWS = PANEL_ROWS * PARALLEL_COUNT
+    VIRTUAL_COLS = PANEL_COLS * CHAIN_LENGTH
+else:
+    if PARALLEL_COUNT != 1:
+        raise ValueError("CHAIN_LAYOUT 'vertical' currently requires PARALLEL_COUNT = 1.")
+    VIRTUAL_ROWS = PANEL_ROWS * CHAIN_LENGTH
+    VIRTUAL_COLS = PANEL_COLS * PARALLEL_COUNT
+
+HARDWARE_ROWS = PANEL_ROWS * PARALLEL_COUNT
+HARDWARE_COLS = PANEL_COLS * CHAIN_LENGTH
+
+FADE_FACTOR = math.exp(math.log(config["FADE_FLOOR"]) / (config["FADE_TIME"] * config["FPS"]))
 base_r, base_g, base_b = config["COLOR"]
 
 # ——— LED Matrix Setup ———
 options = RGBMatrixOptions()
-options.rows = config["ROWS"]
-options.cols = config["COLS"]
-options.chain_length = 1
+options.rows = PANEL_ROWS
+options.cols = PANEL_COLS
+options.chain_length = CHAIN_LENGTH
+options.parallel = PARALLEL_COUNT
 options.hardware_mapping = 'regular'
 options.brightness = 50
 options.disable_hardware_pulsing = True
@@ -54,8 +78,47 @@ options.panel_type = "FM6126A"
 options.gpio_slowdown = 4
 options.multiplexing = 0
 
+ROTATION = config.get("ROTATION_DEG", 0) % 360
+if ROTATION in (90, 270) and VIRTUAL_ROWS != VIRTUAL_COLS:
+    raise ValueError("ROTATION_DEG of 90/270 requires a square matrix layout.")
+
 matrix = RGBMatrix(options=options)
 canvas = matrix.CreateFrameCanvas()
+
+def rotate_buffer(buf: np.ndarray, rotation: int) -> np.ndarray:
+    if rotation == 0:
+        return buf
+    if rotation == 90:
+        return np.rot90(buf, k=-1)
+    if rotation == 180:
+        return np.rot90(buf, k=2)
+    if rotation == 270:
+        return np.rot90(buf, k=1)
+    return buf
+
+def map_virtual_to_hardware(buf: np.ndarray, layout: str) -> np.ndarray:
+    """Map a virtual canvas onto the actual panel arrangement."""
+    if layout == "horizontal":
+        if buf.shape != (HARDWARE_ROWS, HARDWARE_COLS):
+            raise ValueError("Virtual buffer size does not match hardware layout.")
+        return buf
+
+    # layout == "vertical": treat chained panels as a vertical stack
+    if PARALLEL_COUNT != 1:
+        raise ValueError("Vertical chain layout currently supports PARALLEL_COUNT = 1.")
+
+    stripes = CHAIN_LENGTH
+    if buf.shape[0] < stripes * PANEL_ROWS or buf.shape[1] != PANEL_COLS:
+        raise ValueError("Virtual buffer dimensions do not match vertical chain expectations.")
+
+    hardware = np.zeros((HARDWARE_ROWS, HARDWARE_COLS), dtype=buf.dtype)
+    for stripe in range(stripes):
+        y0 = stripe * PANEL_ROWS
+        y1 = y0 + PANEL_ROWS
+        slice_buf = buf[y0:y1, :PANEL_COLS]
+        dest_x = (stripes - 1 - stripe) * PANEL_COLS
+        hardware[:, dest_x:dest_x + PANEL_COLS] = slice_buf
+    return hardware
 
 # ——— Audio Input Setup ———
 pa = pyaudio.PyAudio()
@@ -82,8 +145,8 @@ stream = pa.open(
 )
 
 # ——— Buffers ———
-frame_buf   = np.zeros((config["ROWS"], config["COLS"]), dtype=np.float32)
-peak_buf    = np.zeros(config["BANDS"],          dtype=np.float32)
+frame_buf   = np.zeros((VIRTUAL_ROWS, VIRTUAL_COLS), dtype=np.float32)
+peak_buf    = np.zeros(config["BANDS"], dtype=np.float32)
 running_max = 1e-6
 
 # ——— Main Loop ———
@@ -121,11 +184,11 @@ try:
         frame_buf *= FADE_FACTOR
 
         # 5. Draw inverted, filled curve
-        x_bins = np.linspace(0, config["COLS"] - 1, config["BANDS"])
-        interp = np.interp(np.arange(config["COLS"]), x_bins, norm)
-        half   = config["ROWS"] // 2
+        x_bins = np.linspace(0, VIRTUAL_COLS - 1, config["BANDS"])
+        interp = np.interp(np.arange(VIRTUAL_COLS), x_bins, norm)
+        half   = VIRTUAL_ROWS // 2
 
-        for x in range(config["COLS"]):
+        for x in range(VIRTUAL_COLS):
             h = int(interp[x] * half)
             top    = half - 1 - h
             bottom = half + h if config["MIRROR_MODE"] == "inverted" else half + h
@@ -135,16 +198,21 @@ try:
         # 6. Peak caps
         peak_buf = np.maximum(peak_buf, interp)
         peak_buf *= config["PEAK_DECAY"]
-        for x in range(config["COLS"]):
-            cap_h = int(peak_buf[int(x * config["BANDS"] / config["COLS"])] * half)
+        for x in range(VIRTUAL_COLS):
+            cap_idx = int(x * config["BANDS"] / VIRTUAL_COLS)
+            cap_h = int(peak_buf[cap_idx] * half)
             frame_buf[half - 1 - cap_h, x] = 1.0
             frame_buf[half + cap_h,     x] = 1.0
 
         # 7. Render with color scaling
+        render_buf = rotate_buffer(frame_buf, ROTATION)
+        mapped_buf = map_virtual_to_hardware(render_buf, CHAIN_LAYOUT)
+
         canvas.Clear()
-        fb_uint = (frame_buf * 255).astype(np.uint8)
-        for y in range(config["ROWS"]):
-            for x in range(config["COLS"]):
+        fb_uint = (mapped_buf * 255).astype(np.uint8)
+        rows, cols = mapped_buf.shape
+        for y in range(rows):
+            for x in range(cols):
                 v = fb_uint[y, x] / 255.0  # normalized intensity
                 if v > 0:
                     r = int(base_r * v)
