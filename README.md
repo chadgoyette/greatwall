@@ -214,7 +214,8 @@ All scripts expect the LED matrix hardware to be connected and the `rgbmatrix` P
 Examples:
 
 ```bash
-python3 visualizers/fft_hybrid_Waveform-v2.py         # default FFT matrix visualizer
+python3 visualizers/fft_hybrid_Waveform-v3.py
+python3 visualizers/fft_hybrid_Waveform-v2.py         # default FFT matrix visualizer*** 
 python3 visualizers/waveform_visualizer.py            # smooth waveform line
 python3 visualizers/visualizer.py                     # log-spaced FFT bars
 python3 visualizers/lcd_visualizer.py                 # pygame LCD mirror
