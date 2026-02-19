@@ -35,6 +35,11 @@ config = {
     "SPECTRUM_GAMMA": 1.0,   # >1 emphasizes stronger bands, <1 lifts quieter bands
     "NOISE_GATE": 0.0,       # Suppress very low normalized values before drawing
     "NEIGHBOR_FILL": 0.75,   # Fill gaps by borrowing intensity from adjacent columns
+    "IDLE_RMS_THRESHOLD": 80.0,  # Enter idle mode when RMS stays below this value
+    "IDLE_SECONDS": 5.0,         # Seconds of silence before idle indicator appears
+    "IDLE_DASH_LEN": 5,          # Dash length in pixels for idle center line
+    "IDLE_DASH_GAP": 3,          # Gap length in pixels for idle center line
+    "IDLE_SCROLL_PX": 1,         # Dash scroll speed in pixels per frame
 
     # Mirror mode: "inverted" or "identical"
     #"MIRROR_MODE": "identical",
@@ -166,6 +171,8 @@ frame_buf   = np.zeros((VIRTUAL_ROWS, VIRTUAL_COLS), dtype=np.float32)
 peak_buf    = np.zeros(VIRTUAL_COLS, dtype=np.float32)
 interp_prev = np.zeros(VIRTUAL_COLS, dtype=np.float32)
 running_max = 1e-6
+silence_frames = 0
+dash_phase = 0
 
 # ——— Main Loop ———
 try:
@@ -177,78 +184,107 @@ try:
         raw = stream.read(config["CHUNK"], exception_on_overflow=False)
         samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
         mono = (samples[0::2] + samples[1::2]) * 0.5
+        rms = float(np.sqrt(np.mean(mono * mono)))
 
         # 2. FFT & band magnitudes
         windowed = mono * window
-        fft_vals = np.abs(np.fft.rfft(windowed))
+        fft_vals = np.nan_to_num(np.abs(np.fft.rfft(windowed)), nan=0.0, posinf=0.0, neginf=0.0)
 
         mags = np.zeros(config["BANDS"], dtype=np.float32)
         for i in range(config["BANDS"]):
             mask = band_masks[i]
             mags[i] = fft_vals[mask].mean() if mask.any() else 0.0
+        mags = np.nan_to_num(mags, nan=0.0, posinf=0.0, neginf=0.0)
 
         # 3. Normalize magnitudes
-        peak = mags.max()
-        running_max = max(running_max * config["MAX_DECAY"], peak)
+        peak = float(np.max(mags))
+        if not np.isfinite(running_max) or running_max <= 1e-6:
+            running_max = 1e-6
+        if not np.isfinite(peak):
+            peak = 0.0
+        running_max = max(running_max * config["MAX_DECAY"], peak, 1e-6)
         norm = np.clip(mags / running_max, 0.0, 1.0)
         norm = np.maximum(0.0, (norm - config["NOISE_GATE"]) / max(1e-6, 1.0 - config["NOISE_GATE"]))
         norm = np.power(norm, config["SPECTRUM_GAMMA"])
+        norm = np.nan_to_num(norm, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 3b. Idle detection (sustained silence)
+        if rms < config["IDLE_RMS_THRESHOLD"]:
+            silence_frames += 1
+        else:
+            silence_frames = 0
+        idle_frames = max(1, int(config["IDLE_SECONDS"] * config["FPS"]))
+        idle_mode = silence_frames >= idle_frames
 
         # 4. Fade previous frame
         frame_buf *= FADE_FACTOR
 
-        # 5. Draw inverted, filled curve
-        interp = np.interp(np.arange(VIRTUAL_COLS), x_bins, norm).astype(np.float32)
-        smoothing = np.clip(config["INPUT_SMOOTHING"], 0.0, 0.99)
-        interp = (interp_prev * smoothing) + (interp * (1.0 - smoothing))
-        neighbor_fill = np.clip(config["NEIGHBOR_FILL"], 0.0, 1.0)
-        if neighbor_fill > 0.0:
-            left = np.empty_like(interp)
-            right = np.empty_like(interp)
-            left[0] = interp[0]
-            left[1:] = interp[:-1]
-            right[-1] = interp[-1]
-            right[:-1] = interp[1:]
-            neighbor = np.maximum(left, right)
-            interp = np.maximum(interp, neighbor * neighbor_fill)
-        interp_prev = interp
         half   = VIRTUAL_ROWS // 2
 
-        for x in range(VIRTUAL_COLS):
-            h = int(interp[x] * half)
-            if config["MIRROR_MODE"] == "inverted":
-                top = max(0, half - 1 - h)
-                bottom = min(VIRTUAL_ROWS - 1, half + h)
-                frame_buf[top:half, x] = 1.0
-                # Keep a single center baseline on the top half only.
-                # Bottom half starts mirrored without a permanent center row.
-                if h > 0:
-                    frame_buf[half:bottom, x] = 1.0
-            else:
-                upper_base = half - 1
-                upper_top = max(0, upper_base - h + 1)
-                frame_buf[upper_top:upper_base + 1, x] = 1.0
+        if idle_mode:
+            interp_prev *= 0.9
+            peak_buf *= config["PEAK_DECAY"]
+            center_row = max(0, half - 1)
+            dash_len = max(1, int(config["IDLE_DASH_LEN"]))
+            dash_gap = max(1, int(config["IDLE_DASH_GAP"]))
+            period = dash_len + dash_gap
+            for x in range(VIRTUAL_COLS):
+                if ((x + dash_phase) % period) < dash_len:
+                    frame_buf[center_row, x] = 1.0
+            dash_phase = (dash_phase + int(config["IDLE_SCROLL_PX"])) % period
+        else:
+            # 5. Draw inverted, filled curve
+            interp = np.interp(np.arange(VIRTUAL_COLS), x_bins, norm).astype(np.float32)
+            smoothing = np.clip(config["INPUT_SMOOTHING"], 0.0, 0.99)
+            interp = (interp_prev * smoothing) + (interp * (1.0 - smoothing))
+            neighbor_fill = np.clip(config["NEIGHBOR_FILL"], 0.0, 1.0)
+            if neighbor_fill > 0.0:
+                left = np.empty_like(interp)
+                right = np.empty_like(interp)
+                left[0] = interp[0]
+                left[1:] = interp[:-1]
+                right[-1] = interp[-1]
+                right[:-1] = interp[1:]
+                neighbor = np.maximum(left, right)
+                interp = np.maximum(interp, neighbor * neighbor_fill)
+            interp = np.nan_to_num(interp, nan=0.0, posinf=0.0, neginf=0.0)
+            interp_prev = interp
 
-                lower_base = VIRTUAL_ROWS - 1
-                lower_top = max(half, lower_base - h + 1)
-                frame_buf[lower_top:lower_base + 1, x] = 1.0
+            for x in range(VIRTUAL_COLS):
+                h = max(0, int(interp[x] * half))
+                if config["MIRROR_MODE"] == "inverted":
+                    top = max(0, half - 1 - h)
+                    bottom = min(VIRTUAL_ROWS - 1, half + h)
+                    frame_buf[top:half, x] = 1.0
+                    # Keep a single center baseline on the top half only.
+                    # Bottom half starts mirrored without a permanent center row.
+                    if h > 0:
+                        frame_buf[half:bottom, x] = 1.0
+                else:
+                    upper_base = half - 1
+                    upper_top = max(0, upper_base - h + 1)
+                    frame_buf[upper_top:upper_base + 1, x] = 1.0
 
-        # 6. Peak caps
-        peak_buf = np.maximum(peak_buf, interp)
-        peak_buf *= config["PEAK_DECAY"]
-        for x in range(VIRTUAL_COLS):
-            cap_h = int(peak_buf[x] * half)
-            if config["MIRROR_MODE"] == "inverted":
-                cap_top = max(0, half - 1 - cap_h)
-                frame_buf[cap_top, x] = 1.0
-                if cap_h > 0:
-                    cap_bottom = min(VIRTUAL_ROWS - 1, half + cap_h - 1)
-                    frame_buf[cap_bottom, x] = 1.0
-            else:
-                upper_cap = max(0, (half - 1) - cap_h)
-                lower_cap = max(half, (VIRTUAL_ROWS - 1) - cap_h)
-                frame_buf[upper_cap, x] = 1.0
-                frame_buf[lower_cap, x] = 1.0
+                    lower_base = VIRTUAL_ROWS - 1
+                    lower_top = max(half, lower_base - h + 1)
+                    frame_buf[lower_top:lower_base + 1, x] = 1.0
+
+            # 6. Peak caps
+            peak_buf = np.maximum(peak_buf, interp)
+            peak_buf *= config["PEAK_DECAY"]
+            for x in range(VIRTUAL_COLS):
+                cap_h = max(0, int(peak_buf[x] * half))
+                if config["MIRROR_MODE"] == "inverted":
+                    cap_top = max(0, half - 1 - cap_h)
+                    frame_buf[cap_top, x] = 1.0
+                    if cap_h > 0:
+                        cap_bottom = min(VIRTUAL_ROWS - 1, half + cap_h - 1)
+                        frame_buf[cap_bottom, x] = 1.0
+                else:
+                    upper_cap = max(0, (half - 1) - cap_h)
+                    lower_cap = max(half, (VIRTUAL_ROWS - 1) - cap_h)
+                    frame_buf[upper_cap, x] = 1.0
+                    frame_buf[lower_cap, x] = 1.0
 
         # 7. Render with color scaling
         render_buf = rotate_buffer(frame_buf, ROTATION)
