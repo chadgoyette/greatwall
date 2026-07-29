@@ -323,6 +323,9 @@ sudo systemctl status visualizer.service
 
 # Audio routing checks
 pactl info
+
+<img width="632" height="522" alt="image" src="https://github.com/user-attachments/assets/12ecd202-a6c5-40de-b6ca-944f8da8d36a" />
+
 pactl list sink-inputs
 pactl list sinks short
 ```
