@@ -14,13 +14,17 @@ import time
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
-from PIL import Image, ImageSequence
+from PIL import Image, ImageOps, ImageSequence
 from rgbmatrix import RGBMatrix, RGBMatrixOptions
 
 
 DEFAULT_GIF_PATTERN = os.path.expanduser("~/gifs/*")
 SUPPORTED_GIF_EXTENSIONS = (".gif",)
 DEFAULT_CHAIN_LAYOUT = "vertical"
+
+# Single color used to tint everything on the display. Edit these RGB values
+# (0-255) to change the color. Set to (255, 255, 255) for the original colors.
+TINT_COLOR = (200, 255, 255)
 
 
 def list_gifs(pattern_or_dir: str) -> List[Path]:
@@ -57,7 +61,15 @@ def resize_frame_to_canvas(frame: Image.Image, width: int, height: int, scale: f
     offset_x = (width - new_w) // 2
     offset_y = (height - new_h) // 2
     canvas.paste(resized, (offset_x, offset_y), resized)
-    return canvas.convert("RGB")
+    return apply_tint(canvas.convert("RGB"))
+
+
+def apply_tint(frame: Image.Image) -> Image.Image:
+    """Recolor a frame onto TINT_COLOR, preserving per-pixel brightness."""
+    if TINT_COLOR == (255, 255, 255):
+        return frame
+    gray = frame.convert("L")
+    return ImageOps.colorize(gray, black=(0, 0, 0), white=TINT_COLOR)
 
 
 def render_virtual_frame(
@@ -93,7 +105,8 @@ def render_virtual_frame(
         slice_img = frame.crop((0, y0, frame.width, y1))
         panel_canvas = Image.new("RGB", (panel_cols, panel_rows))
         panel_canvas.paste(slice_img, (offset_x, 0))
-        composed.paste(panel_canvas, (idx * panel_cols, 0))
+        chain_pos = chain_count - 1 - idx
+        composed.paste(panel_canvas, (chain_pos * panel_cols, 0))
 
     canvas.SetImage(composed, 0, 0)
 
