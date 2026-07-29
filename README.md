@@ -48,7 +48,8 @@ The repository contains several visualization modes (FFT bars, waveforms, LCD/py
 
 1. **Hardware**
    - Raspberry Pi (3B+ or newer recommended).
-   - HUB75 RGB panel (64×32) plus an RGB matrix bonnet/HAT compatible with `rpi-rgb-led-matrix`.
+   - HUB75 RGB panel (64×32) plus an RGB matrix bonnet/HAT compatible with `rpi-rgb-led-matrix`. <img width="632" height="522" alt="image" src="https://github.com/user-attachments/assets/3d5237ec-9a5f-4008-adfd-c0cb36232491" />
+
    - Optional HDMI LCD for the pygame visualizer.
 
 2. **System packages**
